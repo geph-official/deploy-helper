@@ -16,23 +16,3 @@ run:
   # Bash commands to run continuously (after each update, or on failure)
   commands:
     - /usr/bin/sample-program
-
-
-program_name: geph-support-bot
-binary_path: ./target/release/geph-support-bot # relative to the config file
-
-update:
-  # How often (in seconds) to pull new changes and rebuild
-  interval: 600
-
-  # Bash commands to run on each update
-  commands:
-    - git pull
-    # - git verify-commit
-    # - cargo check
-    - cargo build --release
-    # - mv ./target/release/sample-program /usr/bin/
-run:
-  # Bash commands to run continuously (after each update, or on failure)
-  commands:
-    - ./target/release/geph-support-bot

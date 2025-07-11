@@ -37,11 +37,12 @@ fn main() {
         .filter_module("deploy-helper", log::LevelFilter::Debug)
         .init();
 
-    match &ARGS.command {
+    if let Err(e) = match &ARGS.command {
         Commands::Update { config } => update(config),
         Commands::Run { config } => run(parse_config(config)),
-    }
-    .unwrap();
+    } {
+        log::error!("ERROR: {e}");
+    };
 }
 
 fn run(config: Config) -> anyhow::Result<()> {
