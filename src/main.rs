@@ -1,7 +1,7 @@
 use std::{
     env,
-    fs::{self, File},
-    io::{self, Write},
+    fs::File,
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -69,6 +69,7 @@ fn update(config_path: &PathBuf) -> anyhow::Result<()> {
         log::error!("Another instance is already running: {}", e);
         anyhow::bail!("Could not acquire file lock")
     }
+    log::debug!("1 - acquired lock");
 
     // 0. Set current dir as dir of the config file
     let config_dir = config_path
@@ -83,6 +84,8 @@ fn update(config_path: &PathBuf) -> anyhow::Result<()> {
             anyhow::bail!("`{}` exited with {}", cmd, status);
         }
     }
+
+    log::debug!("2 - all update commands executed");
 
     // 2. Names & paths
     let deploy_helper_exe = env::current_exe()?;
@@ -151,6 +154,8 @@ WantedBy=multi-user.target
     AtomicFile::new(&sysd_dir.join(&run_svc), AllowOverwrite)
         .write(|f| f.write_all(run_unit.as_bytes()))?;
 
+    log::debug!("3 - all unit files written");
+
     // 5. Reload and enable units
     Command::new("systemctl").arg("daemon-reload").status()?;
     Command::new("systemctl")
@@ -158,7 +163,7 @@ WantedBy=multi-user.target
         .status()?;
     restart_if_changed(&[config.binary_path], &run_svc)?;
 
-    log::debug!("✅ update complete – units written, daemon reloaded, timer & runner active");
+    log::debug!("✅ update complete - daemon reloaded, timer & runner active");
     Ok(())
 }
 
