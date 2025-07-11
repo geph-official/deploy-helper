@@ -78,6 +78,8 @@ fn update(config_path: &PathBuf) -> anyhow::Result<()> {
         .context("config has no parent directory")?;
     env::set_current_dir(config_dir)?;
 
+    log::debug!("2 - set cwd to {}", config_dir.display());
+
     // 1. Immediate update – run all commands
     for cmd in &config.update.commands {
         let status = Command::new("bash").arg("-c").arg(cmd).status()?;
@@ -86,7 +88,7 @@ fn update(config_path: &PathBuf) -> anyhow::Result<()> {
         }
     }
 
-    log::debug!("2 - all update commands executed");
+    log::debug!("3 - all update commands executed");
 
     // 2. Names & paths
     let deploy_helper_exe = env::current_exe()?;
@@ -155,7 +157,7 @@ WantedBy=multi-user.target
     AtomicFile::new(&sysd_dir.join(&run_svc), AllowOverwrite)
         .write(|f| f.write_all(run_unit.as_bytes()))?;
 
-    log::debug!("3 - all unit files written");
+    log::debug!("4 - all unit files written");
 
     // 5. Reload and enable units
     Command::new("systemctl").arg("daemon-reload").status()?;
