@@ -1,7 +1,8 @@
 use std::{
-    env, fs,
+    env,
+    fs::{self, File},
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
 };
 
@@ -9,6 +10,7 @@ use crate::config::{Config, parse_config};
 use anyhow::Context;
 use atomicwrites::{AtomicFile, OverwriteBehavior::AllowOverwrite};
 use clap::{Parser, Subcommand};
+use fs2::FileExt;
 use once_cell::sync::Lazy;
 
 mod config;
@@ -61,13 +63,18 @@ fn run(config: Config) -> anyhow::Result<()> {
 /// Perform the update commands, (re)generate systemd units, and activate them.
 fn update(config_path: &PathBuf) -> anyhow::Result<()> {
     let config = parse_config(config_path);
-    // 0. cd into directory of the config file
-    // let config_dir = config_path
-    //     .parent()
-    //     .context("config has no parent directory")?;
+    let lock_path = format!("/var/lock/update-{}.lock", config.program_name);
+    let lock_file = File::create(Path::new(&lock_path))?;
+    if let Err(e) = lock_file.try_lock_exclusive() {
+        log::error!("Another instance is already running: {}", e);
+        anyhow::bail!("Could not acquire file lock")
+    }
 
-    let mut commands = config.update.commands.clone();
-    commands.push(format!("cd {}", config.program_path.display()));
+    // 0. Set current dir as dir of the config file
+    let config_dir = config_path
+        .parent()
+        .context("config has no parent directory")?;
+    env::set_current_dir(config_dir)?;
 
     // 1. Immediate update – run all commands
     for cmd in &config.update.commands {
@@ -80,7 +87,6 @@ fn update(config_path: &PathBuf) -> anyhow::Result<()> {
     // 2. Names & paths
     let deploy_helper_exe = env::current_exe()?;
     let program_name = config.program_name;
-    let lock_file = format!("/var/lock/update-{}.lock", program_name);
     let update_svc = format!("update-{}.service", program_name);
     let update_timer = format!("update-{}.timer", program_name);
     let run_svc = format!("run-{}.service", program_name);
@@ -95,10 +101,8 @@ After=network-online.target
 
 [Service]
 Type=oneshot 
-ExecStartPre=/bin/bash -c "exec 200>{lock}; flock -n 200"
 ExecStart={deploy_helper_exe} update {config_path}
 "#,
-        lock = lock_file,
         run_svc = run_svc,
         deploy_helper_exe = deploy_helper_exe.display(),
         config_path = config_path.display(),
@@ -152,7 +156,7 @@ WantedBy=multi-user.target
     Command::new("systemctl")
         .args(["enable", "--now", &update_timer])
         .status()?;
-    restart_if_changed(&[config.program_path], &run_svc)?;
+    restart_if_changed(&[config.binary_path], &run_svc)?;
 
     log::debug!("✅ update complete – units written, daemon reloaded, timer & runner active");
     Ok(())
