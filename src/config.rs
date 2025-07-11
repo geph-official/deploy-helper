@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
+    pub program_name: String,
+    pub program_path: PathBuf,
     pub update: Update,
     pub run: Run,
 }

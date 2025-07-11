@@ -1,7 +1,13 @@
-use std::{env, fs, io, path::PathBuf, process::Command};
+use std::{
+    env, fs,
+    io::{self, Write},
+    path::PathBuf,
+    process::Command,
+};
 
 use crate::config::{Config, parse_config};
 use anyhow::Context;
+use atomicwrites::{AtomicFile, OverwriteBehavior::AllowOverwrite};
 use clap::{Parser, Subcommand};
 use once_cell::sync::Lazy;
 
@@ -55,6 +61,14 @@ fn run(config: Config) -> anyhow::Result<()> {
 /// Perform the update commands, (re)generate systemd units, and activate them.
 fn update(config_path: &PathBuf) -> anyhow::Result<()> {
     let config = parse_config(config_path);
+    // 0. cd into directory of the config file
+    // let config_dir = config_path
+    //     .parent()
+    //     .context("config has no parent directory")?;
+
+    let mut commands = config.update.commands.clone();
+    commands.push(format!("cd {}", config.program_path.display()));
+
     // 1. Immediate update – run all commands
     for cmd in &config.update.commands {
         let status = Command::new("bash").arg("-c").arg(cmd).status()?;
@@ -65,33 +79,25 @@ fn update(config_path: &PathBuf) -> anyhow::Result<()> {
 
     // 2. Names & paths
     let deploy_helper_exe = env::current_exe()?;
-    let cwd = env::current_dir()?;
-    let repo = cwd
-        .file_name()
-        .and_then(|s| s.to_str())
-        .context("cannot determine repo name from cwd")?;
-    let lock_file = format!("/var/lock/update-{}.lock", repo);
-    let update_svc = format!("update-{}.service", repo);
-    let update_timer = format!("update-{}.timer", repo);
-    let run_svc = format!("run-{}.service", repo);
+    let program_name = config.program_name;
+    let lock_file = format!("/var/lock/update-{}.lock", program_name);
+    let update_svc = format!("update-{}.service", program_name);
+    let update_timer = format!("update-{}.timer", program_name);
+    let run_svc = format!("run-{}.service", program_name);
     let sysd_dir = PathBuf::from("/etc/systemd/system");
 
     // 3a. Update service
     let update_unit = format!(
         r#"[Unit]
-Description=deploy-helper update for {repo}
+Description=deploy-helper update for {program_name}
 Wants={run_svc}
 After=network-online.target
 
 [Service]
-Type=oneshot
-WorkingDirectory={wd}
+Type=oneshot 
 ExecStartPre=/bin/bash -c "exec 200>{lock}; flock -n 200"
 ExecStart={deploy_helper_exe} update {config_path}
-ExecStartPost=/bin/bash -c "systemctl daemon-reload && systemctl restart {run_svc}"
 "#,
-        repo = repo,
-        wd = cwd.display(),
         lock = lock_file,
         run_svc = run_svc,
         deploy_helper_exe = deploy_helper_exe.display(),
@@ -101,7 +107,7 @@ ExecStartPost=/bin/bash -c "systemctl daemon-reload && systemctl restart {run_sv
     // 3b. Timer unit
     let timer_unit = format!(
         r#"[Unit]
-Description=deploy-helper update timer for {repo}
+Description=deploy-helper update timer for {program_name}
 
 [Timer]
 OnBootSec=1min
@@ -111,7 +117,6 @@ Unit={update_svc}
 [Install]
 WantedBy=timers.target
 "#,
-        repo = repo,
         interval = config.update.interval,
         update_svc = update_svc,
     );
@@ -119,11 +124,10 @@ WantedBy=timers.target
     // 3c. Run service
     let run_unit = format!(
         r#"[Unit]
-Description=deploy-helper run for {repo}
+Description=deploy-helper run for {program_name}
 
 [Service]
-Type=simple
-WorkingDirectory={wd}
+Type=simple 
 ExecStart={deploy_helper_exe} run {config_path}
 Restart=on-failure
 RestartSec=5
@@ -131,34 +135,48 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 "#,
-        repo = repo,
-        wd = cwd.display(),
         deploy_helper_exe = deploy_helper_exe.display(),
         config_path = config_path.display(),
     );
 
     // 4. Write unit files
-    write_if_changed(&sysd_dir.join(&update_svc), &update_unit)?;
-    write_if_changed(&sysd_dir.join(&update_timer), &timer_unit)?;
-    write_if_changed(&sysd_dir.join(&run_svc), &run_unit)?;
+    AtomicFile::new(&sysd_dir.join(&update_svc), AllowOverwrite)
+        .write(|f| f.write_all(update_unit.as_bytes()))?;
+    AtomicFile::new(&sysd_dir.join(&update_timer), AllowOverwrite)
+        .write(|f| f.write_all(timer_unit.as_bytes()))?;
+    AtomicFile::new(&sysd_dir.join(&run_svc), AllowOverwrite)
+        .write(|f| f.write_all(run_unit.as_bytes()))?;
 
     // 5. Reload and enable units
     Command::new("systemctl").arg("daemon-reload").status()?;
     Command::new("systemctl")
         .args(["enable", "--now", &update_timer])
         .status()?;
-    Command::new("systemctl")
-        .args(["enable", "--now", &run_svc])
-        .status()?;
+    restart_if_changed(&[config.program_path], &run_svc)?;
 
     log::debug!("✅ update complete – units written, daemon reloaded, timer & runner active");
     Ok(())
 }
 
-/// Overwrite the target only if contents differ.
-fn write_if_changed(path: &PathBuf, data: &str) -> io::Result<()> {
-    match fs::read_to_string(path) {
-        Ok(existing) if existing == data => Ok(()),
-        _ => fs::write(path, data),
+fn restart_if_changed(paths: &[PathBuf], run_svc: &str) -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+    use std::fs;
+
+    fn digest(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
+        let bytes = fs::read(path)?;
+        Ok(Sha256::digest(&bytes).to_vec())
     }
+
+    let before: Vec<_> = paths.iter().map(digest).collect::<Result<_, _>>()?;
+    // …run update commands here…
+    let after: Vec<_> = paths.iter().map(digest).collect::<Result<_, _>>()?;
+
+    if before != after {
+        Command::new("systemctl")
+            .args(["restart", run_svc])
+            .status()?;
+    } else {
+        log::info!("No binaries changed – skipping restart");
+    }
+    Ok(())
 }
