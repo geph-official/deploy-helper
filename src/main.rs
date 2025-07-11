@@ -9,7 +9,7 @@ use std::{
 use crate::config::{Config, parse_config};
 use anyhow::Context;
 use atomicwrites::{AtomicFile, OverwriteBehavior::AllowOverwrite};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, builder::PathBufValueParser};
 use fs2::FileExt;
 use once_cell::sync::Lazy;
 
@@ -40,13 +40,19 @@ fn main() {
 
     if let Err(e) = match &ARGS.command {
         Commands::Update { config } => update(config),
-        Commands::Run { config } => run(parse_config(config)),
+        Commands::Run { config } => run(config),
     } {
         log::error!("ERROR: {e}");
     };
 }
 
-fn run(config: Config) -> anyhow::Result<()> {
+fn run(config_path: &PathBuf) -> anyhow::Result<()> {
+    let config = parse_config(config_path);
+    let config_dir = config_path
+        .parent()
+        .context("config has no parent directory")?;
+    env::set_current_dir(config_dir)?;
+
     for cmd in &config.run.commands {
         log::debug!("Running: {}", cmd);
         let status = Command::new("bash")
