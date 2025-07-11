@@ -33,9 +33,10 @@ enum Commands {
 static ARGS: Lazy<Args> = Lazy::new(Args::parse);
 
 fn main() {
-    env_logger::Builder::new()
-        .filter_module("deploy-helper", log::LevelFilter::Debug)
-        .init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("deploy_helper=debug"),
+    )
+    .init();
 
     if let Err(e) = match &ARGS.command {
         Commands::Update { config } => update(config),
