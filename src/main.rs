@@ -6,14 +6,16 @@ use std::{
     process::Command,
 };
 
-use crate::config::{Config, parse_config};
+use crate::config::parse_config;
+use crate::run_commands::run_commands;
 use anyhow::Context;
 use atomicwrites::{AtomicFile, OverwriteBehavior::AllowOverwrite};
-use clap::{Parser, Subcommand, builder::PathBufValueParser};
+use clap::{Parser, Subcommand};
 use fs2::FileExt;
 use once_cell::sync::Lazy;
 
 mod config;
+mod run_commands;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -53,25 +55,17 @@ fn run(config_path: &PathBuf) -> anyhow::Result<()> {
         .context("config has no parent directory")?;
     env::set_current_dir(config_dir)?;
 
-    for cmd in &config.run.commands {
-        log::debug!("Running: {}", cmd);
-        let status = Command::new("bash")
-            .arg("-c")
-            .arg(cmd)
-            .status()
-            .unwrap_or_else(|e| panic!("Failed to spawn bash for `{}`: {}", cmd, e));
-
-        if !status.success() {
-            anyhow::bail!("Command `{}` exited with status {}", cmd, status);
-        }
-    }
+    run_commands(&config.run.commands)?;
     Ok(())
 }
 
 /// Perform the update commands, (re)generate systemd units, and activate them.
 fn update(config_path: &PathBuf) -> anyhow::Result<()> {
     let config = parse_config(config_path);
-    let lock_path = format!("/var/lock/update-{}.lock", config.program_name);
+    let lock_path = format!(
+        "/var/lock/deploy-helper-update-{}.lock",
+        config.program_name
+    );
     let lock_file = File::create(Path::new(&lock_path))?;
     if let Err(e) = lock_file.try_lock_exclusive() {
         log::error!("Another instance is already running: {}", e);
@@ -88,12 +82,7 @@ fn update(config_path: &PathBuf) -> anyhow::Result<()> {
     log::debug!("2 - set cwd to {}", config_dir.display());
 
     // 1. Immediate update – run all commands
-    for cmd in &config.update.commands {
-        let status = Command::new("bash").arg("-c").arg(cmd).status()?;
-        if !status.success() {
-            anyhow::bail!("`{}` exited with {}", cmd, status);
-        }
-    }
+    run_commands(&config.update.commands)?;
 
     log::debug!("3 - all update commands executed");
 
